@@ -1,7 +1,18 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import Navbar from './components/Navbar'
+import CreatorPage from './pages/CreatorPage'
+import GalleryPage from './pages/GalleryPage'
+
 export default function App() {
   return (
-    <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
-      <h1 className="text-3xl font-bold">שורטס בעברית</h1>
-    </div>
+    <BrowserRouter>
+      <div className="min-h-screen bg-zinc-950 text-white">
+        <Navbar />
+        <Routes>
+          <Route path="/" element={<CreatorPage />} />
+          <Route path="/gallery" element={<GalleryPage />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
   )
 }
