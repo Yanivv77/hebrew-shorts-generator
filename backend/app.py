@@ -9,7 +9,9 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+import pathlib
+
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -524,6 +526,18 @@ async def social_user(x_upload_post_key: Optional[str] = Header(None)):
                      if isinstance(socials.get(pl), dict)]
         profiles.append({"username": username, "connected": connected})
     return {"profiles": profiles}
+
+
+# --- SPA fallback (must be last route) ---
+
+STATIC_DIR = pathlib.Path(__file__).parent / "static"
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    index = STATIC_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 # --- Static file mounts (after all routes) ---

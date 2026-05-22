@@ -1,23 +1,10 @@
 services:
-  backend:
+  app:
     build: .
-    container_name: hebrew-shorts-backend
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend:/app
-      - ./output:/app/output
     env_file: .env
-    restart: unless-stopped
-
-  frontend:
-    build: ./frontend
-    container_name: hebrew-shorts-frontend
-    ports:
-      - "5173:5173"
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
+      - ./output:/app/output
+      - ./uploads:/app/uploads
     restart: unless-stopped
