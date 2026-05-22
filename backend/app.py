@@ -213,6 +213,22 @@ async def run_job(job_id: str):
 async def cleanup_old_jobs():
     while True:
         await asyncio.sleep(300)
+        cutoff = time.time() - JOB_RETENTION_SECONDS
+        stale = [
+            jid
+            for jid, j in list(jobs.items())
+            if j["created_at"] < cutoff and j["status"] in ("completed", "failed")
+        ]
+        for jid in stale:
+            del jobs[jid]
+
+
+@app.get("/api/ugc/status/{job_id}")
+def job_status(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return {"status": job["status"], "logs": job["logs"], "result": job["result"]}
 
 
 # --- Static file mounts (after all routes) ---
