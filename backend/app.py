@@ -7,7 +7,10 @@ import httpx
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from fastapi.middleware.cors import CORSMiddleware
 import pathlib
 
@@ -48,8 +51,15 @@ async def lifespan(app):
     yield
 
 
+limiter = Limiter(key_func=get_remote_address)
+
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "*")
+ALLOWED_ORIGINS = ["*"] if _origins_env == "*" else [o.strip() for o in _origins_env.split(",")]
+
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
 # --- Pydantic models ---
@@ -89,11 +99,12 @@ class SocialPostRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "1.0.0"}
 
 
 @app.post("/api/ugc/analyze")
-async def analyze(req: AnalyzeRequest, x_gemini_key: Optional[str] = Header(None)):
+@limiter.limit("1/10 seconds")
+async def analyze(request: Request, req: AnalyzeRequest, x_gemini_key: Optional[str] = Header(None)):
     gemini_key = x_gemini_key or os.environ.get("GEMINI_API_KEY")
     if not gemini_key:
         raise HTTPException(400, "Gemini API key required (X-Gemini-Key header or GEMINI_API_KEY env)")
