@@ -3,6 +3,8 @@ function headers(keys = {}) {
   if (keys.gemini) h['X-Gemini-Key'] = keys.gemini
   if (keys.fal) h['X-Fal-Key'] = keys.fal
   if (keys.elevenlabs) h['X-Elevenlabs-Key'] = keys.elevenlabs
+  if (keys.upload_post_key) h['X-Upload-Post-Key'] = keys.upload_post_key
+  if (keys.upload_post_user) h['X-Upload-Post-User'] = keys.upload_post_user
   return h
 }
 

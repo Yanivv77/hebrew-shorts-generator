@@ -5,6 +5,8 @@ const FIELDS = [
   { key: 'gemini', label: 'Gemini API Key', placeholder: 'AIza...' },
   { key: 'fal', label: 'FAL API Key', placeholder: 'fal-...' },
   { key: 'elevenlabs', label: 'ElevenLabs API Key', placeholder: 'sk_...' },
+  { key: 'upload_post_key', label: 'Upload-Post API Key', placeholder: 'your-key' },
+  { key: 'upload_post_user', label: 'Upload-Post User ID', placeholder: 'user-id' },
 ]
 
 export default function ApiKeyModal({ keys, onUpdate, onClose }) {

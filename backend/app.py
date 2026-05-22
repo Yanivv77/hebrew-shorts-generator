@@ -2,6 +2,8 @@ import asyncio
 import os
 import time
 import uuid
+
+import httpx
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
@@ -70,6 +72,15 @@ class GenerateRequest(BaseModel):
     voice_id: Optional[str] = None
     video_mode: str = "lowcost"
     product_name: Optional[str] = None
+
+
+class SocialPostRequest(BaseModel):
+    video_url: str
+    platforms: List[str]
+    title: Optional[str] = None
+    caption: Optional[str] = None
+    scheduled_date: Optional[str] = None
+    timezone: Optional[str] = "UTC"
 
 
 # --- Endpoints ---
@@ -420,6 +431,99 @@ def get_gallery_item(video_id: str):
     if not item:
         raise HTTPException(404, "Video not found")
     return item
+
+
+# --- Social Publishing ---
+
+@app.post("/api/ugc/social/post")
+async def social_post(
+    req: SocialPostRequest,
+    x_upload_post_key: Optional[str] = Header(None),
+    x_upload_post_user: Optional[str] = Header(None),
+):
+    api_key = x_upload_post_key or os.environ.get("UPLOAD_POST_API_KEY", "")
+    user_id = x_upload_post_user or os.environ.get("UPLOAD_POST_USER_ID", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing Upload-Post user ID")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.get(req.video_url)
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to fetch video")
+        video_bytes = r.content
+
+    final_title = req.title or "Hebrew Short"
+    final_desc = req.caption or final_title
+
+    data_payload: dict = {
+        "user": user_id,
+        "title": final_title,
+        "platform[]": req.platforms,
+        "async_upload": "true",
+    }
+    if req.scheduled_date:
+        data_payload["scheduled_date"] = req.scheduled_date
+        if req.timezone:
+            data_payload["timezone"] = req.timezone
+    if "tiktok" in req.platforms:
+        data_payload["tiktok_title"] = final_desc
+    if "instagram" in req.platforms:
+        data_payload["instagram_title"] = final_desc
+        data_payload["media_type"] = "REELS"
+    if "youtube" in req.platforms:
+        data_payload["youtube_title"] = final_title
+        data_payload["youtube_description"] = final_desc
+        data_payload["privacyStatus"] = "public"
+
+    files = {"video": ("video.mp4", video_bytes, "video/mp4")}
+    headers = {"Authorization": f"Apikey {api_key}"}
+
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(
+            "https://api.upload-post.com/api/upload",
+            headers=headers,
+            data=data_payload,
+            files=files,
+        )
+
+    if response.status_code not in [200, 201, 202]:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Upload-Post error: {response.text}",
+        )
+    return response.json()
+
+
+@app.get("/api/ugc/social/user")
+async def social_user(x_upload_post_key: Optional[str] = Header(None)):
+    api_key = x_upload_post_key or os.environ.get("UPLOAD_POST_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            "https://api.upload-post.com/api/uploadposts/users",
+            headers={"Authorization": f"Apikey {api_key}"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Failed to fetch user: {resp.text}",
+        )
+
+    data = resp.json()
+    profiles = []
+    for p in data.get("profiles", []):
+        username = p.get("username")
+        if not username:
+            continue
+        socials = p.get("social_accounts", {})
+        connected = [pl for pl in ["tiktok", "instagram", "youtube"]
+                     if isinstance(socials.get(pl), dict)]
+        profiles.append({"username": username, "connected": connected})
+    return {"profiles": profiles}
 
 
 # --- Static file mounts (after all routes) ---
