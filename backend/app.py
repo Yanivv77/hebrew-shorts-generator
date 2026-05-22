@@ -1,8 +1,9 @@
 import asyncio
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +62,14 @@ class ActorOptionsRequest(BaseModel):
     num_options: int = 3
 
 
+class GenerateRequest(BaseModel):
+    script_index: int
+    scripts: List[dict]
+    actor_image_url: Optional[str] = None
+    voice_id: Optional[str] = None
+    video_mode: str = "lowcost"
+
+
 # --- Endpoints ---
 
 @app.get("/health")
@@ -116,11 +125,89 @@ async def actor_upload(file: UploadFile = File(...)):
     return {"url": f"/uploads/{filename}"}
 
 
-# --- Background workers (stubs until commit 7/8) ---
+@app.post("/api/ugc/generate")
+async def generate_video(
+    req: GenerateRequest,
+    x_fal_key: Optional[str] = Header(None),
+    x_elevenlabs_key: Optional[str] = Header(None),
+):
+    fal_key = x_fal_key or os.environ.get("FAL_API_KEY")
+    elevenlabs_key = x_elevenlabs_key or os.environ.get("ELEVENLABS_API_KEY")
+
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {
+        "status": "queued",
+        "logs": [],
+        "result": None,
+        "created_at": time.time(),
+        "request": req.model_dump(),
+        "fal_key": fal_key,
+        "elevenlabs_key": elevenlabs_key,
+    }
+    await job_queue.put(job_id)
+    return {"job_id": job_id, "status": "queued"}
+
+
+# --- Background workers ---
 
 async def process_job_queue():
     while True:
-        await asyncio.sleep(1)
+        job_id = await job_queue.get()
+        asyncio.create_task(run_job(job_id))
+        job_queue.task_done()
+
+
+async def run_job(job_id: str):
+    import httpx as _httpx
+
+    async with concurrency_semaphore:
+        job = jobs[job_id]
+        job["status"] = "processing"
+        req = job["request"]
+
+        def log(msg: str):
+            jobs[job_id]["logs"].append({"time": time.time(), "msg": msg})
+
+        try:
+            # Resolve actor_image_url to a local filesystem path
+            actor_url = req.get("actor_image_url") or ""
+            actor_path = None
+            if actor_url.startswith("/uploads/"):
+                actor_path = os.path.join(UPLOADS_DIR, actor_url[len("/uploads/"):])
+            elif actor_url:
+                log(f"Downloading actor image from {actor_url}")
+                resp = _httpx.get(actor_url, timeout=30, follow_redirects=True)
+                resp.raise_for_status()
+                actor_path = os.path.join(UPLOADS_DIR, f"actor_{job_id}.png")
+                with open(actor_path, "wb") as f:
+                    f.write(resp.content)
+
+            script = req["scripts"][req["script_index"]]
+            config = {
+                "fal_key": job["fal_key"],
+                "elevenlabs_key": job["elevenlabs_key"],
+                "voice_id": req.get("voice_id"),
+                "selected_actor_path": actor_path,
+                "video_mode": req.get("video_mode", "lowcost"),
+            }
+            output_dir = os.path.join(OUTPUT_DIR, job_id)
+            os.makedirs(output_dir, exist_ok=True)
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, generate_full_video, script, config, output_dir, log
+            )
+
+            video_url = upload_clip(result["video_path"], job_id)
+            if not video_url:
+                video_url = f"/videos/{job_id}/{result['video_filename']}"
+
+            job["result"] = {"video_url": video_url, "cost": result["cost_estimate"]}
+            job["status"] = "completed"
+
+        except Exception as e:
+            log(f"Error: {e}")
+            job["status"] = "failed"
 
 
 async def cleanup_old_jobs():
