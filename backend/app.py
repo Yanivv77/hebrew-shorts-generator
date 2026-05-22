@@ -7,10 +7,11 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from s3_uploader import upload_actor, upload_clip
+from s3_uploader import upload_actor, upload_clip, upload_to_gallery, list_gallery
 from saasshorts import (
     analyze_saas,
     generate_actor_images,
@@ -68,6 +69,7 @@ class GenerateRequest(BaseModel):
     actor_image_url: Optional[str] = None
     voice_id: Optional[str] = None
     video_mode: str = "lowcost"
+    product_name: Optional[str] = None
 
 
 # --- Endpoints ---
@@ -198,12 +200,26 @@ async def run_job(job_id: str):
                 None, generate_full_video, script, config, output_dir, log
             )
 
-            video_url = upload_clip(result["video_path"], job_id)
+            video_url = upload_clip(job_id, result["video_path"])
             if not video_url:
                 video_url = f"/videos/{job_id}/{result['video_filename']}"
 
             job["result"] = {"video_url": video_url, "cost": result["cost_estimate"]}
             job["status"] = "completed"
+
+            gallery_result = upload_to_gallery(
+                video_path=result["video_path"],
+                meta={
+                    "title": script.get("title", ""),
+                    "product_name": req.get("product_name") or script.get("title", ""),
+                    "description": script.get("caption", ""),
+                    "hashtags": script.get("hashtags", []),
+                    "actor_image_path": result.get("actor_image"),
+                },
+            )
+            if gallery_result:
+                job["result"]["gallery_id"] = gallery_result["video_id"]
+                job["result"]["thumbnail_url"] = gallery_result.get("actor_url", "")
 
         except Exception as e:
             log(f"Error: {e}")
@@ -229,6 +245,181 @@ def job_status(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return {"status": job["status"], "logs": job["logs"], "result": job["result"]}
+
+
+@app.get("/gallery", response_class=HTMLResponse)
+def gallery_page():
+    import json as _json
+    videos = list_gallery()
+    items_ld = [
+        {
+            "@type": "VideoObject",
+            "name": v.get("title", ""),
+            "description": v.get("description", ""),
+            "thumbnailUrl": v.get("actor_url", ""),
+            "contentUrl": v.get("video_url", ""),
+            "uploadDate": v.get("created_at", ""),
+        }
+        for v in videos
+    ]
+    schema_ld = _json.dumps({
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": i + 1, "item": item}
+            for i, item in enumerate(items_ld)
+        ],
+    }, ensure_ascii=False)
+
+    cards_html = ""
+    for v in videos:
+        vid_id = v.get("video_id", "")
+        thumb = v.get("actor_url", "")
+        src = v.get("video_url", "")
+        title = v.get("title", "")
+        product = v.get("product_name", "")
+        cards_html += f"""
+        <a href="/gallery/{vid_id}" style="display:block;text-decoration:none;color:inherit;">
+          <div style="background:#1a1a2e;border-radius:12px;overflow:hidden;">
+            <video src="{src}" poster="{thumb}" muted loop preload="none"
+              style="width:100%;aspect-ratio:9/16;object-fit:cover;display:block;"
+              onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0"></video>
+            <div style="padding:12px;">
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px;">{title}</div>
+              <div style="font-size:12px;color:#888;">{product}</div>
+            </div>
+          </div>
+        </a>"""
+
+    og_image = videos[0].get("actor_url", "") if videos else ""
+    html = f"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>גלריית סרטונים | Hebrew Shorts</title>
+<meta name="description" content="סרטונים שיווקיים קצרים עם שחקנים מבוססי AI">
+<meta property="og:type" content="website">
+<meta property="og:title" content="גלריית סרטונים | Hebrew Shorts">
+<meta property="og:description" content="סרטונים שיווקיים קצרים עם שחקנים מבוססי AI">
+<meta property="og:image" content="{og_image}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="גלריית סרטונים | Hebrew Shorts">
+<meta name="twitter:image" content="{og_image}">
+<script type="application/ld+json">{schema_ld}</script>
+<style>
+  body{{margin:0;background:#0d0d1a;color:#fff;font-family:system-ui,sans-serif;}}
+  h1{{text-align:center;padding:32px 0 16px;font-size:28px;}}
+  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;padding:16px 24px 48px;max-width:1400px;margin:0 auto;}}
+</style>
+</head>
+<body>
+<h1>גלריית סרטונים</h1>
+<div class="grid">{cards_html or '<p style="text-align:center;color:#888;">אין סרטונים עדיין</p>'}</div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/gallery/{video_id}", response_class=HTMLResponse)
+def gallery_video_page(video_id: str):
+    import json as _json
+    videos = list_gallery()
+    v = next((x for x in videos if x.get("video_id") == video_id), None)
+    if not v:
+        return HTMLResponse(content="<h1>404 — Video not found</h1>", status_code=404)
+
+    title = v.get("title", "")
+    description = v.get("description", "")
+    thumb = v.get("actor_url", "")
+    src = v.get("video_url", "")
+    upload_date = v.get("created_at", "")
+    product = v.get("product_name", "")
+
+    schema_ld = _json.dumps({
+        "@context": "https://schema.org",
+        "@type": "VideoObject",
+        "name": title,
+        "description": description,
+        "thumbnailUrl": thumb,
+        "contentUrl": src,
+        "uploadDate": upload_date,
+    }, ensure_ascii=False)
+
+    html = f"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} | Hebrew Shorts</title>
+<meta name="description" content="{description}">
+<meta property="og:type" content="video.other">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{description}">
+<meta property="og:image" content="{thumb}">
+<meta property="og:video" content="{src}">
+<meta property="og:video:type" content="video/mp4">
+<meta name="twitter:card" content="player">
+<meta name="twitter:title" content="{title}">
+<meta name="twitter:image" content="{thumb}">
+<meta name="twitter:player" content="{src}">
+<script type="application/ld+json">{schema_ld}</script>
+<style>
+  body{{margin:0;background:#0d0d1a;color:#fff;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;padding:32px 16px;}}
+  video{{max-width:360px;width:100%;border-radius:16px;}}
+  h1{{margin:24px 0 8px;font-size:22px;text-align:center;}}
+  p{{color:#aaa;text-align:center;max-width:400px;}}
+  .back{{color:#888;text-decoration:none;margin-bottom:24px;display:block;}}
+</style>
+</head>
+<body>
+<a class="back" href="/gallery">← חזרה לגלריה</a>
+<video src="{src}" poster="{thumb}" autoplay loop playsinline controls></video>
+<h1>{title}</h1>
+<p>{product}</p>
+<p>{description}</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/sitemap.xml")
+def sitemap():
+    videos = list_gallery()
+    urls = ["<url><loc>/gallery</loc></url>"]
+    for v in videos:
+        vid_id = v.get("video_id", "")
+        if vid_id:
+            urls.append(f"<url><loc>/gallery/{vid_id}</loc></url>")
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    xml += "\n".join(urls)
+    xml += "\n</urlset>"
+    return Response(content=xml, media_type="application/xml")
+
+
+@app.get("/api/gallery")
+def get_gallery(refresh: bool = False):
+    videos = list_gallery(force_refresh=refresh)
+    return [
+        {
+            "id": v.get("video_id"),
+            "title": v.get("title", ""),
+            "video_url": v.get("video_url", ""),
+            "thumbnail_url": v.get("actor_url", ""),
+            "product_name": v.get("product_name", ""),
+            "created_at": v.get("created_at", ""),
+        }
+        for v in videos
+    ]
+
+
+@app.get("/api/gallery/{video_id}")
+def get_gallery_item(video_id: str):
+    videos = list_gallery()
+    item = next((v for v in videos if v.get("video_id") == video_id), None)
+    if not item:
+        raise HTTPException(404, "Video not found")
+    return item
 
 
 # --- Static file mounts (after all routes) ---
