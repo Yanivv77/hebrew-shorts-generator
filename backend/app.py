@@ -1,9 +1,10 @@
 import asyncio
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -55,6 +56,11 @@ class AnalyzeRequest(BaseModel):
     actor_gender: str = "female"
 
 
+class ActorOptionsRequest(BaseModel):
+    actor_description: str
+    num_options: int = 3
+
+
 # --- Endpoints ---
 
 @app.get("/health")
@@ -77,6 +83,37 @@ async def analyze(req: AnalyzeRequest, x_gemini_key: Optional[str] = Header(None
     )
 
     return {"analysis": analysis, "scripts": scripts}
+
+
+@app.post("/api/ugc/actor-options")
+async def actor_options(req: ActorOptionsRequest, x_fal_key: Optional[str] = Header(None)):
+    fal_key = x_fal_key or os.environ.get("FAL_API_KEY")
+    if not fal_key:
+        raise HTTPException(400, "fal.ai API key required (X-Fal-Key header or FAL_API_KEY env)")
+
+    title_slug = f"opt_{uuid.uuid4().hex[:8]}"
+    loop = asyncio.get_event_loop()
+    paths = await loop.run_in_executor(
+        None, generate_actor_images, req.actor_description, fal_key, UPLOADS_DIR, title_slug, req.num_options
+    )
+
+    urls = []
+    for path in paths:
+        s3_url = upload_actor(path)
+        urls.append(s3_url if s3_url else f"/uploads/{os.path.basename(path)}")
+
+    return {"images": urls}
+
+
+@app.post("/api/ugc/actor-upload")
+async def actor_upload(file: UploadFile = File(...)):
+    ext = os.path.splitext(file.filename or "actor.png")[1] or ".png"
+    filename = f"actor_{uuid.uuid4().hex}{ext}"
+    dest = os.path.join(UPLOADS_DIR, filename)
+    content = await file.read()
+    with open(dest, "wb") as f:
+        f.write(content)
+    return {"url": f"/uploads/{filename}"}
 
 
 # --- Background workers (stubs until commit 7/8) ---
