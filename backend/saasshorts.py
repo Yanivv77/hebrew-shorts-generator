@@ -1081,7 +1081,7 @@ def transcribe_audio_for_subs(audio_path: str) -> list:
     return words
 
 
-def generate_tiktok_subs(audio_path: str, output_path: str, max_words: int = 3) -> str:
+def generate_tiktok_subs(audio_path: str, output_path: str, max_words: int = 3, language: str = "en") -> str:
     """
     Generate TikTok-style ASS subtitles from audio using Whisper transcription.
 
@@ -1104,8 +1104,14 @@ def generate_tiktok_subs(audio_path: str, output_path: str, max_words: int = 3) 
         end = group[-1]["end"]
         chunks.append({"text": text, "start": start, "end": end})
 
+    # Detect Hebrew from transcribed content or explicit language param
+    all_text = " ".join(c["text"] for c in chunks)
+    is_hebrew = language == "he" or any('א' <= ch <= 'ת' for ch in all_text)
+
+    font_name = "David CLM" if is_hebrew else "Arial Black"
+
     # Build ASS file with TikTok style
-    ass_content = """[Script Info]
+    ass_content = f"""[Script Info]
 Title: TikTok Style Subs
 ScriptType: v4.00+
 PlayResX: 1080
@@ -1114,17 +1120,18 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TikTok,Arial Black,90,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,40,40,120,1
+Style: TikTok,{font_name},90,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,40,40,120,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
+    rtl_tag = r"{\an2}" if is_hebrew else ""
     for chunk in chunks:
         start = _format_ass_time(chunk["start"])
         end = _format_ass_time(chunk["end"])
         text = chunk["text"].replace("\n", "\\N")
-        ass_content += f"Dialogue: 0,{start},{end},TikTok,,0,0,0,,{text}\n"
+        ass_content += f"Dialogue: 0,{start},{end},TikTok,,0,0,0,,{rtl_tag}{text}\n"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(ass_content)
